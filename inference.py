@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
-from sort import Sort
+from sort import Sort, adaptive_brightness, adaptive_sharpen
 from ultralytics import YOLO
 
 # Set video path
-video_path = r"D:\Computer Vision\Computer Vision  Basic Source Code\Object Tracking Algorithm\Video\video0.mp4"  # Change this to your video file path
+video_path = r"D:\Computer Vision\Object Tracking Algorithm\Video\video1.mp4"  # Change this to your video file path
 MAX_AGE = 500
 VIDEO_FPS = 29.97
 CONFIDENCE_THRESHOLD = 0.25
@@ -20,43 +20,24 @@ SHARPEN_RADIUS = 3
 
 # Initialize video capture
 cap = cv2.VideoCapture(video_path)
+if not cap.isOpened():
+    print(f"Error: Could not open video file at {video_path}")
+    exit(1)
 
 # Load YOLOv8 model
 model = YOLO('yolov8s.pt')
 
 # Load class names
 classnames = []
-with open('classes.txt', 'r') as f:
-    classnames = f.read().splitlines()
-
-def adaptive_brightness(frame):
-    """Adjusts brightness using CLAHE in LAB color space."""
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_GRID_SIZE)
-    cl = clahe.apply(l)
-    limg = cv2.merge((cl, a, b))
-    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
-
-def adaptive_sharpen(frame):
-    """Applies sharpening selectively to edges using a Laplacian mask."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    laplacian = np.uint8(np.absolute(laplacian))
-    
-    # Create a mask for high-gradient areas
-    mask = cv2.threshold(laplacian, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    mask = cv2.GaussianBlur(mask, (SHARPEN_RADIUS * 2 + 1, SHARPEN_RADIUS * 2 + 1), 0)
-    mask = mask.astype(float) / 255.0
-    mask = cv2.cvtColor(mask.astype(np.uint8), cv2.COLOR_GRAY2BGR).astype(float) / 255.0
-
-    # Unsharp mask implementation
-    blurred = cv2.GaussianBlur(frame, (SHARPEN_RADIUS, SHARPEN_RADIUS), 0)
-    sharpened = cv2.addWeighted(frame, SHARPEN_AMOUNT, blurred, -(SHARPEN_AMOUNT - 1), 0)
-    
-    # Blend original and sharpened based on the edge mask
-    result = (frame * (1.0 - mask) + sharpened * mask).astype(np.uint8)
-    return result
+try:
+    with open('classes.txt', 'r') as f:
+        classnames = f.read().splitlines()
+except FileNotFoundError:
+    print("Error: 'classes.txt' file not found.")
+    exit(1)
+except Exception as e:
+    print(f"Error reading 'classes.txt': {e}")
+    exit(1)
 
 # Initialize SORT tracker
 tracker = Sort(max_age=MAX_AGE)
@@ -70,15 +51,15 @@ while cap.isOpened():
     # Pre-processing
     processed_frame = frame.copy()
     if ENABLE_ADAPTIVE_BRIGHTNESS:
-        processed_frame = adaptive_brightness(processed_frame)
+        processed_frame = adaptive_brightness(processed_frame, CLAHE_CLIP_LIMIT, CLAHE_GRID_SIZE)
     if ENABLE_ADAPTIVE_SHARPEN:
-        processed_frame = adaptive_sharpen(processed_frame)
+        processed_frame = adaptive_sharpen(processed_frame, SHARPEN_AMOUNT, SHARPEN_RADIUS)
 
     # Detect objects using YOLOv8
-    detections = np.empty((0, 6))  # Store valid detections
-    results = model(processed_frame, imgsz=IMAGE_SIZE, conf=0.4, iou=0.45)
+    detections_list = []
+    results = model(processed_frame, imgsz=IMAGE_SIZE, conf=CONFIDENCE_THRESHOLD, iou=0.45)
 
-    # Extract bounding boxes for "person" class
+    # Extract bounding boxes for "car" class
     for result in results:
         boxes = result.boxes
         for box in boxes:
@@ -87,9 +68,11 @@ while cap.isOpened():
             classindex = int(box.cls[0])  # Convert to int
             object_detected = classnames[classindex]
 
-            if object_detected and  conf > CONFIDENCE_THRESHOLD:
-                new_detection = np.array([x1, y1, x2, y2, conf, classindex])
-                detections = np.vstack((detections, new_detection))
+            if object_detected == 'car' and conf > CONFIDENCE_THRESHOLD:
+                detections_list.append([x1, y1, x2, y2, conf, classindex])
+
+    # Convert list to numpy array
+    detections = np.array(detections_list) if detections_list else np.empty((0, 6))
 
     # Update tracker with new detections
     track_results = tracker.update(detections)

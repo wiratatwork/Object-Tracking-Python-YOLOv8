@@ -4,4 +4,4 @@ __pycache__/
 .env
 .vscode/
 .idea/
-yolov8s.pt
+*.pt

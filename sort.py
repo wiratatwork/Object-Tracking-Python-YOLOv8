@@ -1,12 +1,43 @@
 from __future__ import print_function
 import os
 import numpy as np
+import cv2
 from skimage import io
 import time
 from filterpy.kalman import KalmanFilter
+from typing import List, Tuple, Optional
 np.random.seed(0)
 
-def linear_assignment(cost_matrix):
+def adaptive_brightness(frame: np.ndarray, clip_limit: float = 2.0, grid_size: Tuple[int, int] = (8, 8)) -> np.ndarray:
+    """Adjusts brightness using CLAHE in LAB color space."""
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+
+def adaptive_sharpen(frame: np.ndarray, amount: float = 1.5, radius: int = 3) -> np.ndarray:
+    """Applies sharpening selectively to edges using a Laplacian mask."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    
+    # Create a mask for high-gradient areas
+    mask = cv2.threshold(laplacian, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    mask = cv2.GaussianBlur(mask, (radius * 2 + 1, radius * 2 + 1), 0)
+    mask = mask.astype(float) / 255.0
+    mask = cv2.cvtColor(mask.astype(np.uint8), cv2.COLOR_GRAY2BGR).astype(float) / 255.0
+
+    # Unsharp mask implementation
+    blurred = cv2.GaussianBlur(frame, (radius, radius), 0)
+    sharpened = cv2.addWeighted(frame, amount, blurred, -(amount - 1), 0)
+    
+    # Blend original and sharpened based on the edge mask
+    result = (frame * (1.0 - mask) + sharpened * mask).astype(np.uint8)
+    return result
+
+def linear_assignment(cost_matrix: np.ndarray) -> np.ndarray:
   try:
     import lap
     _, x, y = lap.lapjv(cost_matrix, extend_cost=True)
@@ -17,7 +48,7 @@ def linear_assignment(cost_matrix):
     return np.array(list(zip(x, y)))
 
 
-def iou_batch(bb_test, bb_gt):
+def iou_batch(bb_test: np.ndarray, bb_gt: np.ndarray) -> np.ndarray:
   """
   From SORT: Computes IOU between two bboxes in the form [x1,y1,x2,y2]
   """
@@ -36,7 +67,7 @@ def iou_batch(bb_test, bb_gt):
   return(o)  
 
 
-def convert_bbox_to_z(bbox):
+def convert_bbox_to_z(bbox: np.ndarray) -> np.ndarray:
   """
   Takes a bounding box in the form [x1,y1,x2,y2] and returns z in the form
     [x,y,s,r] where x,y is the centre of the box and s is the scale/area and r is
@@ -51,7 +82,7 @@ def convert_bbox_to_z(bbox):
   return np.array([x, y, s, r]).reshape((4, 1))
 
 
-def convert_x_to_bbox(x,score=None):
+def convert_x_to_bbox(x: np.ndarray, score: Optional[float] = None) -> np.ndarray:
   """
   Takes a bounding box in the centre form [x,y,s,r] and returns it in the form
     [x1,y1,x2,y2] where x1,y1 is the top left and x2,y2 is the bottom right
@@ -69,7 +100,7 @@ class KalmanBoxTracker(object):
   This class represents the internal state of individual tracked objects observed as bbox.
   """
   count = 0
-  def __init__(self,bbox):
+  def __init__(self, bbox: np.ndarray):
     """
     Initialises a tracker using initial bounding box.
     """
@@ -95,7 +126,7 @@ class KalmanBoxTracker(object):
     self.hit_streak = 0
     self.age = 0
 
-  def update(self,bbox):
+  def update(self, bbox: np.ndarray) -> None:
     """
     Updates the state vector with observed bbox.
     """
@@ -108,7 +139,7 @@ class KalmanBoxTracker(object):
         self.best_class = bbox[5]
     self.kf.update(convert_bbox_to_z(bbox))
 
-  def predict(self):
+  def predict(self) -> np.ndarray:
     """
     Advances the state vector and returns the predicted bounding box estimate.
     """
@@ -122,14 +153,14 @@ class KalmanBoxTracker(object):
     self.history.append(convert_x_to_bbox(self.kf.x))
     return self.history[-1]
 
-  def get_state(self):
+  def get_state(self) -> np.ndarray:
     """
     Returns the current bounding box estimate.
     """
     return convert_x_to_bbox(self.kf.x)
 
 
-def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
+def associate_detections_to_trackers(detections: np.ndarray, trackers: List[KalmanBoxTracker], iou_threshold: float = 0.3) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
   """
   Assigns detections to tracked object (both represented as bounding boxes)
 
@@ -137,6 +168,7 @@ def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
   """
   if(len(trackers)==0):
     return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
+
 
   iou_matrix = iou_batch(detections, trackers)
 
@@ -173,7 +205,7 @@ def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
   return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
 
 class Sort(object):
-  def __init__(self, max_age=1, min_hits=3, iou_threshold=0.3):
+  def __init__(self, max_age: int = 1, min_hits: int = 3, iou_threshold: float = 0.3):
     """
     Sets key parameters for SORT
     """
@@ -183,7 +215,7 @@ class Sort(object):
     self.trackers = []
     self.frame_count = 0
 
-  def update(self, dets=np.empty((0, 5))):
+  def update(self, dets: np.ndarray = np.empty((0, 5))) -> np.ndarray:
     """
     Params:
       dets - a numpy array of detections in the format [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...]
