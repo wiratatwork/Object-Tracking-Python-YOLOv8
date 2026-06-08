@@ -2,6 +2,8 @@
 
 This project implements an object tracking system using the YOLOv8 object detection model and the SORT (Simple Online and Realtime Tracking) algorithm.
 
+![Object Detection](Image/detect.png)
+
 ## Features
 - Object detection using YOLOv8
 - Real-time tracking using SORT
